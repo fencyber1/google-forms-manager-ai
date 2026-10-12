@@ -9,7 +9,8 @@
   },
   "dependencies": {
     "googleapis": "^144.0.0",
-    "@modelcontextprotocol/sdk": "^1.12.1"
+    "@modelcontextprotocol/sdk": "^1.12.1",
+    "@supabase/supabase-js": "^2.47.10"
   },
   "devDependencies": {
     "vercel": "^39.1.0"

@@ -1,10 +1,11 @@
 import { google } from 'googleapis';
-import { requireMethod, requireSession, noCache } from '../../lib/session.js';
+import { getAuthenticatedGoogleClient, noCache, requireMethod } from '../../lib/session.js';
 
 export default async function handler(req, res) {
   noCache(res);
   if (!requireMethod(req, res)) return;
-  const tokens = requireSession(req, res); if (!tokens) return;
+  const auth = await getAuthenticatedGoogleClient(req, res);
+  if (!auth) return;
   const { title, questions = [] } = req.body || {};
   if (typeof title !== 'string' || !title.trim()) return res.status(400).json({ error: 'Provide a form title.' });
   if (!Array.isArray(questions) || questions.length > 50) return res.status(400).json({ error: 'Questions must be an array with no more than 50 items.' });
@@ -14,8 +15,6 @@ export default async function handler(req, res) {
     if (['multiple_choice', 'checkboxes', 'dropdown'].includes(q.type) && (!Array.isArray(q.options) || q.options.length < 2)) return res.status(400).json({ error: `Question "${q.title}" needs at least two options.` });
   }
   try {
-    const auth = new google.auth.OAuth2(process.env.GOOGLE_CLIENT_ID, process.env.GOOGLE_CLIENT_SECRET);
-    auth.setCredentials(tokens);
     const forms = google.forms({ version: 'v1', auth });
     const created = await forms.forms.create({ requestBody: { info: { title: title.trim() } } });
     const formId = created.data.formId;

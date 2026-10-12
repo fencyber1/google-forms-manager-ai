@@ -1,15 +1,14 @@
 import { google } from 'googleapis';
-import { requireMethod, requireSession, noCache } from '../../lib/session.js';
+import { getAuthenticatedGoogleClient, noCache, requireMethod } from '../../lib/session.js';
 
 export default async function handler(req, res) {
   noCache(res);
   if (!requireMethod(req, res, 'GET')) return;
-  const tokens = requireSession(req, res); if (!tokens) return;
+  const auth = await getAuthenticatedGoogleClient(req, res);
+  if (!auth) return;
   const formId = req.query.formId;
   if (!formId || typeof formId !== 'string') return res.status(400).json({ error: 'Provide formId as a query parameter.' });
   try {
-    const auth = new google.auth.OAuth2(process.env.GOOGLE_CLIENT_ID, process.env.GOOGLE_CLIENT_SECRET);
-    auth.setCredentials(tokens);
     const forms = google.forms({ version: 'v1', auth });
     const result = await forms.forms.get({ formId });
     return res.status(200).json({ formId: result.data.formId, info: result.data.info, items: result.data.items || [], responderUri: result.data.responderUri, revisionId: result.data.revisionId });
