@@ -59,6 +59,33 @@ each other's forms or responses.
 - `POST /api/forms/create` — JSON `{ "title": "Example", "questions": [{"title":"Your name","type":"short","required":true}] }`
 - `GET /api/forms/get?formId=FORM_ID` — retrieve a known form
 - `GET /api/forms/responses?formId=FORM_ID` — retrieve responses for a known form
+- `POST /api/mcp` — remote MCP endpoint (Streamable HTTP, stateless). See below.
+
+## MCP server (`POST /api/mcp`)
+
+A stateless MCP server (official `@modelcontextprotocol/sdk`) exposing three tools
+that operate only on the caller's own connected Google account:
+
+- `create_google_form` — `{ title, questions: [{ title, type, required, options }] }`
+- `get_google_form` — `{ formId }`
+- `get_google_form_responses` — `{ formId }`
+
+Connection details:
+
+- Transport: Streamable HTTP. Each `POST` carries one JSON-RPC message; the server
+  answers with JSON or an SSE stream. `GET`/`DELETE` return `405`.
+- Authentication: the caller's `gfm_session` cookie (same session as the REST
+  endpoints). Connect first via `/api/auth/google` in the same client so the cookie
+  is present. Tool schemas contain no user ID or email fields — callers cannot
+  request another user's account. No new environment variables are required.
+- The tools never send messages, emails, or form replies, and never return
+  tokens, secrets, or keys.
+- **ChatGPT note:** ChatGPT remote connectors require MCP-spec OAuth (authorization
+  server + Bearer tokens), which this endpoint does not yet implement — it uses the
+  cookie session. ChatGPT compatibility is a separate authorization task; do not
+  treat this endpoint as ChatGPT-ready.
+- Tests: run `npm install`, then `npm test` (`node --test`). Suites cover tool
+  discovery, input validation, authentication failure, and user isolation.
 
 ## Important limitations and security notes
 - Google OAuth tokens are stored per-user in Supabase, encrypted with AES-256-GCM. The
@@ -66,4 +93,4 @@ each other's forms or responses.
 - Google Forms API does not provide a general list-all-my-forms endpoint. The form ID is needed to read a specific form or its responses.
 - Do not expose endpoints publicly without adding authentication/authorization and request protections.
 - Drafting and sending email replies is not implemented; this starter only reads form responses. Sending email should require a separate Gmail API integration and explicit approval.
-- The ChatGPT MCP server/tool definitions still need to be implemented and tested before the plugin can call these endpoints.
+- MCP tools (`/api/mcp`) are implemented and tested for cookie-authenticated clients. ChatGPT remote-connector authentication (MCP OAuth authorization flow) is still a separate task.
