@@ -1,4 +1,5 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
+import { google } from 'googleapis';
 import { GOOGLE_SCOPES, buildOAuthClient, saveGoogleConnection } from '../../lib/google-connections.js';
 import { encryptSession } from '../../lib/session.js';
 
@@ -47,6 +48,18 @@ function logStageError(stage, e) {
   );
 }
 
+// Fetches the authenticated Google profile (stable id + email) using the
+// OAuth2 v2 userinfo endpoint. `googleApi` is injectable for tests.
+// Throws when the profile or its stable id is missing.
+export async function fetchGoogleProfile(oauth2, googleApi = google) {
+  const userInfo = googleApi.oauth2({ version: 'v2', auth: oauth2 });
+  const { data: profile } = await userInfo.userinfo.get();
+  const userId = profile?.id;
+  const googleEmail = profile?.email || null;
+  if (!userId) throw new Error('Could not identify the Google account.');
+  return { userId, googleEmail };
+}
+
 export default async function handler(req, res) {
   if (req.method !== 'GET') return res.status(405).send('Use GET.');
   const required = [
@@ -93,10 +106,7 @@ export default async function handler(req, res) {
 
     // Securely identify the Google account: stable "sub" is user_id.
     stage = 'userinfo';
-    const { data: profile } = await oauth2.userinfo.get();
-    const userId = profile?.id;
-    const googleEmail = profile?.email || null;
-    if (!userId) throw new Error('Could not identify the Google account.');
+    const { userId, googleEmail } = await fetchGoogleProfile(oauth2);
 
     stage = 'save-connection';
     await saveGoogleConnection({
