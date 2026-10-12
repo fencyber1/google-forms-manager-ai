@@ -19,6 +19,34 @@ function parseCookies(header = '') {
   );
 }
 
+// TEMPORARY DIAGNOSTICS — remove once the callback failure is resolved.
+// Logs only stage name, error name, safe error code, and a sanitized
+// message. Never logs URLs, query parameters, codes, tokens, cookies,
+// secrets, or stack traces.
+function sanitizeForLog(value) {
+  return String(value ?? '')
+    .replace(/https?:\/\/[^\s'"]+/g, '[redacted-url]')
+    .replace(/ya29\.[A-Za-z0-9_\-]+/g, '[redacted-google-token]')
+    .replace(/mcp_(?:at|rt|code)_[A-Za-z0-9_\-]+/g, '[redacted-token]')
+    .replace(/\b(code|state|token)=[^&\s]+/gi, '$1=[redacted]')
+    .replace(/\b[A-Za-z0-9_\-]{40,}\b/g, '[redacted-long-value]')
+    .slice(0, 300);
+}
+
+function logStageError(stage, e) {
+  const code =
+    typeof e?.code === 'string' && /^[a-z0-9_\-]{1,64}$/i.test(e.code) ? e.code : null;
+  console.error(
+    JSON.stringify({
+      event: 'oauth-callback-failed',
+      stage,
+      errorName: e?.name || 'Error',
+      code: code || null,
+      message: sanitizeForLog(e?.message),
+    }),
+  );
+}
+
 export default async function handler(req, res) {
   if (req.method !== 'GET') return res.status(405).send('Use GET.');
   const required = [
@@ -54,6 +82,7 @@ export default async function handler(req, res) {
     return res.status(400).send('OAuth state expired or invalid. Start again.');
   }
 
+  let stage = 'token-exchange';
   try {
     const oauth2 = buildOAuthClient();
     const { tokens } = await oauth2.getToken(req.query.code);
@@ -63,11 +92,13 @@ export default async function handler(req, res) {
     oauth2.setCredentials(tokens);
 
     // Securely identify the Google account: stable "sub" is user_id.
+    stage = 'userinfo';
     const { data: profile } = await oauth2.userinfo.get();
     const userId = profile?.id;
     const googleEmail = profile?.email || null;
     if (!userId) throw new Error('Could not identify the Google account.');
 
+    stage = 'save-connection';
     await saveGoogleConnection({
       userId,
       googleEmail,
@@ -75,6 +106,7 @@ export default async function handler(req, res) {
       scopes: tokens.scope || GOOGLE_SCOPES,
     });
 
+    stage = 'session-cookie';
     const session = encryptSession({ uid: userId, v: 1, createdAt: Date.now() });
     res.setHeader('Set-Cookie', [
       `gfm_session=${session}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=2592000`,
@@ -93,7 +125,7 @@ export default async function handler(req, res) {
     );
   } catch (e) {
     // Never log tokens, emails, secrets, or encryption keys.
-    console.error('OAuth callback failed:', e?.message || 'unknown error');
+    logStageError(stage, e);
     return res
       .status(500)
       .send('Could not complete Google authorization. Check the OAuth redirect URI and environment variables, then try again.');
