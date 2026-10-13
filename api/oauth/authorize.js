@@ -171,7 +171,7 @@ export async function processAuthorizeDecision({ body, googleSub, store, fetchIm
     fetchImpl,
   );
   if (body.decision !== 'allow') {
-    return { redirect: errorRedirect(validated.redirectUri, 'access_denied', 'The user denied the request.', validated.state) };
+    return { redirect: errorRedirect(validated.redirectUri, 'access_denied', 'The user denied the request.', validated.state, issuerIdentifier()) };
   }
   const code = await issueAuthorizationCode(store, {
     clientId: validated.clientId,
