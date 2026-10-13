@@ -32,7 +32,7 @@ describe('oauth metadata', () => {
     assert.deepEqual(asm.token_endpoint_auth_methods_supported, ['none']);
     assert.equal(asm.client_id_metadata_document_supported, true);
     assert.equal(asm.authorization_response_iss_parameter_supported, true);
-    assert.ok(!('registration_endpoint' in asm), 'DCR is out of scope: no registration endpoint advertised');
+    assert.ok('registration_endpoint' in asm, 'DCR is now supported: registration endpoint advertised');
   });
 
   it('vercel.json rewrites serve both well-known URLs', () => {

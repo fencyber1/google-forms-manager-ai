@@ -1,9 +1,8 @@
 // OAuth 2.0 Authorization Server Metadata (RFC 8414) for the MCP
 // authorization server. Served publicly at
 // /.well-known/oauth-authorization-server via vercel.json rewrites.
-// Advertises CIMD-only client registration with public-client (`none`)
-// token exchange + mandatory PKCE S256. No DCR: registration_endpoint is
-// intentionally absent.
+// Advertises CIMD-preferred client registration with public-client (`none`)
+// token exchange + mandatory PKCE S256. DCR is also available.
 import { issuerIdentifier, resourceIdentifier } from '../../lib/mcp-oauth.js';
 
 export function authorizationServerMetadata() {
@@ -13,6 +12,7 @@ export function authorizationServerMetadata() {
     authorization_endpoint: `${issuer}/api/oauth/authorize`,
     token_endpoint: `${issuer}/api/oauth/token`,
     revocation_endpoint: `${issuer}/api/oauth/revoke`,
+    registration_endpoint: `${issuer}/api/oauth/register`,
     response_types_supported: ['code'],
     grant_types_supported: ['authorization_code', 'refresh_token'],
     code_challenge_methods_supported: ['S256'],

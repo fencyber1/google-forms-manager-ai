@@ -1,19 +1,13 @@
-// MCP OAuth token endpoint. Supports grant_type=authorization_code
-// (PKCE S256, public clients only) and grant_type=refresh_token
-// (atomic rotation with reuse detection). Client authentication method:
-// `none`. Any client_secret present is rejected with invalid_client.
-// `resource` is required on both grants and must match the canonical
-// resource; mismatches fail closed.
-import {
-  createSupabaseOAuthStore,
-  fetchCimd,
-  issuerIdentifier,
-  mintTokenPair,
-  oauthError,
-  redeemAuthorizationCode,
-  refreshGrant,
-  resourceIdentifier,
-} from '../../lib/mcp-oauth.js';
+// MCP OAuth 2.1 Token Endpoint
+//
+// POST /api/oauth/token
+// Supports grant_type=authorization_code (PKCE S256, public clients only)
+// and grant_type=refresh_token (atomic rotation with reuse detection).
+// Client authentication method: `none` (public clients via PKCE).
+// Any client_secret present is rejected with invalid_client.
+// `resource` is required on both grants and must match the canonical resource.
+import { oauthError, sha256Hex, verifyPkceS256, issuerIdentifier, resourceIdentifier } from '../../lib/mcp-oauth.js';
+import { redeemAuthorizationCode, mintTokenPair, refreshGrant, revokeTokens, createSupabaseOAuthStore, fetchCimd } from '../../lib/mcp-oauth.js';
 
 function tokenError(res, err) {
   const code = err?.code || 'invalid_request';
@@ -28,22 +22,6 @@ function parseBody(req) {
   const out = {};
   for (const [k, v] of new URLSearchParams(String(req.body))) out[k] = v;
   return out;
-}
-
-export default async function handler(req, res) {
-  res.setHeader('Cache-Control', 'no-store');
-  if (req.method !== 'POST') {
-    res.setHeader('Allow', 'POST');
-    return res.status(405).json({ error: 'invalid_request', error_description: 'Use POST.' });
-  }
-  try {
-    const response = await processTokenGrant(parseBody(req), createSupabaseOAuthStore());
-    return res.status(200).json(response);
-  } catch (e) {
-    // Never log token values; messages here are safe (no secrets).
-    console.error('Token endpoint failed:', e?.code || 'unknown error');
-    return tokenError(res, e);
-  }
 }
 
 // Full grant processing with injectable store + fetch. Exported for tests.
@@ -65,7 +43,7 @@ export async function processTokenGrant(body, store, fetchImpl) {
     throw oauthError('invalid_target', 'Unknown resource.');
   }
 
-  if (grantType === 'authorization_code') {
+  if (body.grant_type === 'authorization_code') {
     if (!body.code) throw oauthError('invalid_request', 'An authorization code is required.');
     if (!body.redirect_uri) throw oauthError('invalid_request', 'A redirect_uri is required.');
     if (!body.code_verifier) throw oauthError('invalid_request', 'A PKCE code_verifier is required.');
@@ -106,4 +84,25 @@ export async function processTokenGrant(body, store, fetchImpl) {
     scope: rotated.scopes.join(' '),
     refresh_token: rotated.refreshToken,
   };
+}
+
+export default async function handler(req, res) {
+  res.setHeader('Cache-Control', 'no-store');
+  if (req.method !== 'POST') {
+    res.setHeader('Allow', 'POST');
+    return res.status(405).json({ error: 'invalid_request', error_description: 'Use POST.' });
+  }
+  const store = createSupabaseOAuthStore();
+  const body = parseBody(req);
+  const issuer = issuerIdentifier();
+  const resource = resourceIdentifier();
+
+  try {
+    const response = await processTokenGrant(parseBody(req), store);
+    return res.status(200).json(response);
+  } catch (e) {
+    // Never log token values; messages here are safe (no secrets).
+    console.error('Token endpoint failed:', e?.code || 'unknown error');
+    return tokenError(res, e);
+  }
 }

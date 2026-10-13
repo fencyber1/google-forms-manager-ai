@@ -1,36 +1,49 @@
-// MCP OAuth authorization endpoint (authorization_code + PKCE S256).
+// MCP OAuth 2.1 Authorization Endpoint
 //
-// GET validates the request and renders a consent page; POST (CSRF-bound
-// to the Google session) issues a single-use authorization code.
-// Requires an authenticated Google session FIRST: grants are bound to the
-// session's Google `sub`. No user-supplied identity is ever accepted.
-// redirect_uri is validated BEFORE any redirect or error redirect happens;
-// `iss` is attached to success and error redirects (RFC 9207).
+// GET  /api/oauth/authorize - Renders consent page (requires authenticated Google session)
+// POST /api/oauth/authorize - Processes consent decision (CSRF-protected)
+import { createHmac, createHash, timingSafeEqual, randomBytes } from 'node:crypto';
+import { google } from 'googleapis';
+import { getUserId } from '../../lib/session.js';
 import {
-  STABLE_CHATGPT_REDIRECT,
-  escHtml,
-  fetchCimd,
-  issueAuthorizationCode,
+  canonicalBase,
   issuerIdentifier,
-  mintCsrfToken,
-  normalizeMcpScopes,
-  oauthError,
   resourceIdentifier,
+  GOOGLE_SCOPES,
+  fetchCimd,
   validateRedirectUri,
+  normalizeMcpScopes,
+  mintCsrfToken,
   verifyCsrfToken,
+  saveAuthCode,
+  issueAuthorizationCode,
   createSupabaseOAuthStore,
 } from '../../lib/mcp-oauth.js';
-import { getUserId } from '../../lib/session.js';
-import { getGoogleConnection } from '../../lib/google-connections.js';
+
+const CODE_TTL_MS = 10 * 60 * 1000; // 10 minutes
+const CSRF_TTL_MS = 15 * 60 * 1000; // 15 minutes
+const STABLE_CHATGPT_REDIRECT = 'https://chatgpt.com/connector_platform_oauth_redirect';
+const CHATGPT_HOST = 'chatgpt.com';
 
 function htmlPage(title, body) {
   return (
     '<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1">' +
-    `<title>${escHtml(title)}</title></head>` +
+    `<title>${escapeHtml(title)}</title></head>` +
     '<body style="font-family:system-ui;max-width:640px;margin:3rem auto;padding:0 1rem">' +
     body +
     '</body></html>'
   );
+}
+
+function escapeHtml(value) {
+  return String(value ?? '').replace(/[&<>"']/g, (c) => {
+    if (c === '&') return '&';
+    if (c === '<') return '<';
+    if (c === '>') return '>';
+    if (c === '"') return '"';
+    if (c === "'") return '\'';
+    return c;
+  });
 }
 
 function loginRequired(res) {
@@ -41,7 +54,7 @@ function loginRequired(res) {
       htmlPage(
         'Connect Google first',
         '<h1>Connect your Google account first</h1>' +
-          '<p>Open <a href="/api/auth/google">/api/auth/google</a> to connect Google, then restart the ChatGPT authorization.</p>',
+          '<p>Open <a href="/api/auth/google">/api/auth/google</a> to connect Google, then restart the authorization.</p>',
       ),
     );
 }
@@ -53,8 +66,63 @@ function describeScope(scope) {
   return scope;
 }
 
-// Validates everything except the session. Returns validated params or
-// throws oauthError. Exported for tests (fetchImpl injectable).
+function errorRedirect(redirectUri, error, description, state, issuer) {
+  const url = new URL(redirectUri);
+  url.searchParams.set('error', error);
+  url.searchParams.set('error_description', description);
+  url.searchParams.set('iss', issuer);
+  if (state !== undefined) url.searchParams.set('state', state);
+  return url.toString();
+}
+
+function successRedirect(redirectUri, code, state, issuer) {
+  const url = new URL(redirectUri);
+  url.searchParams.set('code', code);
+  url.searchParams.set('iss', issuer);
+  if (state !== undefined) url.searchParams.set('state', state);
+  return url.toString();
+}
+
+function parseBody(req) {
+  if (!req.body) return {};
+  if (typeof req.body === 'object') return req.body;
+  const out = {};
+  for (const [k, v] of new URLSearchParams(String(req.body))) out[k] = v;
+  return out;
+}
+
+function consentPage({
+  googleEmail,
+  clientName,
+  clientId,
+  redirectHost,
+  scopes,
+  csrf,
+  fields,
+}) {
+  const hidden = Object.entries(fields)
+    .map(([k, v]) => `<input type="hidden" name="${escapeHtml(k)}" value="${escapeHtml(v)}">`)
+    .join('');
+  const scopeItems = scopes.map((s) => `<li>${escapeHtml(describeScope(s))} <code>${escapeHtml(s)}</code></li>`).join('');
+  return htmlPage(
+    'Authorize Application',
+    '<h1>Authorize Application?</h1>' +
+      `<p><strong>${escapeHtml(clientName || 'Unknown Client')}</strong> (<code>${escapeHtml(clientId)}</code>) wants to access Google Forms Manager AI and will redirect back to <code>${escapeHtml(redirectHost)}</code>.</p>` +
+      `<p>Signed in to Google as <strong>${escapeHtml(googleEmail || 'your account')}</strong>. The grant will be bound to this Google account only.</p>` +
+      '<p>Permissions requested:</p><ul>' +
+      scopeItems +
+      '</ul>' +
+      '<form method="POST">' +
+      hidden +
+      `<input type="hidden" name="csrf" value="${escapeHtml(csrf)}">` +
+      '<button type="submit" name="decision" value="allow">Allow</button> ' +
+      '<button type="submit" name="decision" value="deny">Deny</button>' +
+      '</form>',
+  );
+}
+
+// Validates request parameters (except session). Returns validated params or throws.
+// Exported for tests (fetchImpl injectable).
 export async function validateAuthorizeRequest(params, fetchImpl) {
   const { response_type, client_id, redirect_uri, scope, state, code_challenge, code_challenge_method, resource } = params;
   if (response_type !== 'code') throw oauthError('unsupported_response_type', 'Only response_type=code is supported.');
@@ -71,13 +139,11 @@ export async function validateAuthorizeRequest(params, fetchImpl) {
   return { clientId: client_id, redirectUri, scopes, state, challenge: code_challenge, cimd };
 }
 
-function errorRedirect(redirectUri, error, description, state) {
-  const url = new URL(redirectUri);
-  url.searchParams.set('error', error);
-  url.searchParams.set('error_description', description);
-  url.searchParams.set('iss', issuerIdentifier());
-  if (state !== undefined) url.searchParams.set('state', state);
-  return url.toString();
+function oauthError(code, description, status = 400) {
+  const err = new Error(description);
+  err.code = code;
+  err.status = status;
+  return err;
 }
 
 // Processes the consent POST. Revalidates all client-controlled fields,
@@ -122,36 +188,6 @@ export async function processAuthorizeDecision({ body, googleSub, store, fetchIm
   return { redirect: url.toString() };
 }
 
-function parseBody(req) {
-  if (!req.body) return {};
-  if (typeof req.body === 'object') return req.body;
-  const out = {};
-  for (const [k, v] of new URLSearchParams(String(req.body))) out[k] = v;
-  return out;
-}
-
-function consentPage({ googleEmail, clientName, clientId, redirectHost, scopes, csrf, fields }) {
-  const hidden = Object.entries(fields)
-    .map(([k, v]) => `<input type="hidden" name="${escHtml(k)}" value="${escHtml(v)}">`)
-    .join('');
-  const scopeItems = scopes.map((s) => `<li>${escHtml(describeScope(s))} <code>${escHtml(s)}</code></li>`).join('');
-  return htmlPage(
-    'Authorize ChatGPT',
-    '<h1>Authorize ChatGPT?</h1>' +
-      `<p><strong>${escHtml(clientName || 'ChatGPT')}</strong> (<code>${escHtml(clientId)}</code>) wants to access Google Forms Manager AI and will redirect back to <code>${escHtml(redirectHost)}</code>.</p>` +
-      `<p>Signed in to Google as <strong>${escHtml(googleEmail || 'your account')}</strong>. The grant will be bound to this Google account only.</p>` +
-      '<p>Permissions requested:</p><ul>' +
-      scopeItems +
-      '</ul>' +
-      '<form method="POST">' +
-      hidden +
-      `<input type="hidden" name="csrf" value="${escHtml(csrf)}">` +
-      '<button type="submit" name="decision" value="allow">Allow</button> ' +
-      '<button type="submit" name="decision" value="deny">Deny</button>' +
-      '</form>',
-  );
-}
-
 export default async function handler(req, res) {
   res.setHeader('Cache-Control', 'no-store');
   const store = createSupabaseOAuthStore();
@@ -161,10 +197,10 @@ export default async function handler(req, res) {
     if (!googleSub) return loginRequired(res);
     let validated;
     try {
-      validated = await validateAuthorizeRequest(req.query || {});
+      validated = await validateRequest(req.query || {});
     } catch (e) {
       res.setHeader('Content-Type', 'text/html; charset=utf-8');
-      return res.status(e?.status || 400).send(htmlPage('Authorization error', `<h1>Cannot start authorization</h1><p>${escHtml(e?.message || 'Invalid request.')}</p>`));
+      return res.status(e?.status || 400).send(htmlPage('Authorization error', `<h1>Cannot start authorization</h1><p>${escapeHtml(e?.message || 'Invalid request.')}</p>`));
     }
     let redirectHost = '';
     try {
@@ -172,14 +208,17 @@ export default async function handler(req, res) {
     } catch {
       redirectHost = validated.redirectUri;
     }
-    const csrf = mintCsrfToken(googleSub);
     // Best-effort display email; failure only hides the email line.
     let googleEmail = null;
     try {
-      googleEmail = (await getGoogleConnection(googleSub))?.google_email || null;
+      const oauth2 = new (await import('googleapis')).google.auth.OAuth2();
+      oauth2.setCredentials({ access_token: 'dummy' }); // We'll use a different approach
+      const conn = await getGoogleConnection(googleSub);
+      googleEmail = conn?.google_email || null;
     } catch {
       googleEmail = null;
     }
+    const csrf = mintCsrfToken(googleSub);
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
     return res.status(200).send(
       consentPage({
@@ -206,16 +245,16 @@ export default async function handler(req, res) {
     if (!googleSub) return loginRequired(res);
     const body = parseBody(req);
     try {
-      const { redirect } = await processAuthorizeDecision({ body, googleSub, store });
+      const { redirect } = await processAuthorizeDecision({ body, googleSub, store: createSupabaseOAuthStore() });
       return res.redirect(302, redirect);
     } catch (e) {
       if (e?.code === 'CSRF') {
         res.setHeader('Content-Type', 'text/html; charset=utf-8');
-        return res.status(403).send(htmlPage('Forbidden', `<h1>${escHtml(e.message)}</h1>`));
+        return res.status(403).send(htmlPage('Forbidden', `<h1>${escapeHtml(e.message)}</h1>`));
       }
       if (e?.code && e?.status) {
         res.setHeader('Content-Type', 'text/html; charset=utf-8');
-        return res.status(e.status).send(htmlPage('Authorization error', `<h1>Cannot complete authorization</h1><p>${escHtml(e.message)}</p>`));
+        return res.status(e.status).send(htmlPage('Authorization error', `<h1>Cannot complete authorization</h1><p>${escapeHtml(e.message)}</p>`));
       }
       console.error('Authorize failed:', e?.message || 'unknown error');
       res.setHeader('Content-Type', 'text/html; charset=utf-8');
@@ -226,3 +265,6 @@ export default async function handler(req, res) {
   res.setHeader('Allow', 'GET, POST');
   return res.status(405).send('Use GET or POST.');
 }
+
+// Import at the end to avoid circular dependency
+const { getGoogleConnection } = await import('../../lib/google-connections.js');
