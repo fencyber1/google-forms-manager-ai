@@ -15,7 +15,7 @@ const ROUTES = {
 };
 
 export default async function handler(req, res) {
-  const segments = req.query?.all;
+  const segments = req.query?.route;
   const name = Array.isArray(segments) ? segments[0] : segments;
   const fn = typeof name === 'string' ? ROUTES[name] : undefined;
   if (!fn) {
