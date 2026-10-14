@@ -8,9 +8,9 @@ process.env.APP_BASE_URL = process.env.APP_BASE_URL || 'https://mcp-test.example
 process.env.SESSION_SECRET = process.env.SESSION_SECRET || 'test-session-secret-at-least-32-chars!!';
 
 // Dynamic imports after setting environment variables
-const { processClientRegistration } = await import('../api/oauth/register.js');
-const { processAuthorizeDecision } = await import('../api/oauth/authorize.js');
-const { processTokenGrant } = await import('../api/oauth/token.js');
+const { processClientRegistration } = await import('../lib/oauth-register.js');
+const { processAuthorizeDecision } = await import('../lib/oauth-authorize.js');
+const { processTokenGrant } = await import('../lib/oauth-token.js');
 const { createMemoryOAuthStore, mintCsrfToken, validateMcpAccessToken } = await import('../lib/mcp-oauth.js');
 
 const ISSUER = process.env.APP_BASE_URL;

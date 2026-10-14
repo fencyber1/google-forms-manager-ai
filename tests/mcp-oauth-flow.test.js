@@ -11,8 +11,8 @@ const assert = (await import('node:assert/strict')).default;
 const { createHash } = await import('node:crypto');
 
 // Dynamic imports after setting environment variables
-const { processAuthorizeDecision } = await import('../api/oauth/authorize.js');
-const { processTokenGrant } = await import('../api/oauth/token.js');
+const { processAuthorizeDecision } = await import('../lib/oauth-authorize.js');
+const { processTokenGrant } = await import('../lib/oauth-token.js');
 const { createMemoryOAuthStore, mintCsrfToken, validateMcpAccessToken } = await import('../lib/mcp-oauth.js');
 
 const ISSUER = process.env.APP_BASE_URL;
