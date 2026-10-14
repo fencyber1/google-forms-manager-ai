@@ -6,8 +6,8 @@
 // Client authentication method: `none` (public clients via PKCE).
 // Any client_secret present is rejected with invalid_client.
 // `resource` is required on both grants and must match the canonical resource.
-import { oauthError, sha256Hex, verifyPkceS256, issuerIdentifier, resourceIdentifier } from '../../lib/mcp-oauth.js';
-import { redeemAuthorizationCode, mintTokenPair, refreshGrant, revokeTokens, createSupabaseOAuthStore, fetchCimd } from '../../lib/mcp-oauth.js';
+import { oauthError, issuerIdentifier, resourceIdentifier } from '../../lib/mcp-oauth.js';
+import { redeemAuthorizationCode, mintTokenPair, refreshGrant, createSupabaseOAuthStore, resolveOAuthClient } from '../../lib/mcp-oauth.js';
 
 function tokenError(res, err) {
   const code = err?.code || 'invalid_request';
@@ -37,8 +37,9 @@ export async function processTokenGrant(body, store, fetchImpl) {
   }
   const clientId = body.client_id;
   if (!clientId) throw oauthError('invalid_client', 'A client_id is required.', 401);
-  // Re-validate the CIMD client on every token call (cheap, strict).
-  await fetchCimd(clientId, fetchImpl);
+  // Re-resolve the client on every token call (cheap, strict): CIMD URLs
+  // are re-validated, DCR ids are looked up in the store.
+  await resolveOAuthClient({ clientId, store, fetchImpl });
   if (body.resource !== undefined && body.resource !== resource) {
     throw oauthError('invalid_target', 'Unknown resource.');
   }

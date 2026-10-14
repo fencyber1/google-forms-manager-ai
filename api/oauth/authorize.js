@@ -6,16 +6,13 @@ import { createHmac, createHash, timingSafeEqual, randomBytes } from 'node:crypt
 import { google } from 'googleapis';
 import { getUserId } from '../../lib/session.js';
 import {
-  canonicalBase,
   issuerIdentifier,
   resourceIdentifier,
-  GOOGLE_SCOPES,
-  fetchCimd,
+  resolveOAuthClient,
   validateRedirectUri,
   normalizeMcpScopes,
   mintCsrfToken,
   verifyCsrfToken,
-  saveAuthCode,
   issueAuthorizationCode,
   createSupabaseOAuthStore,
 } from '../../lib/mcp-oauth.js';
@@ -122,21 +119,22 @@ function consentPage({
 }
 
 // Validates request parameters (except session). Returns validated params or throws.
-// Exported for tests (fetchImpl injectable).
-export async function validateAuthorizeRequest(params, fetchImpl) {
+// Accepts CIMD client_id URLs and DCR-issued opaque client_ids.
+// Exported for tests (store + fetchImpl injectable).
+export async function validateAuthorizeRequest(params, { store, fetchImpl } = {}) {
   const { response_type, client_id, redirect_uri, scope, state, code_challenge, code_challenge_method, resource } = params;
   if (response_type !== 'code') throw oauthError('unsupported_response_type', 'Only response_type=code is supported.');
   if (!client_id) throw oauthError('invalid_request', 'A client_id is required.');
   if (code_challenge_method !== 'S256') throw oauthError('invalid_request', 'code_challenge_method must be S256.');
   if (!code_challenge) throw oauthError('invalid_request', 'A PKCE code_challenge is required.');
   if (resource !== resourceIdentifier()) throw oauthError('invalid_target', 'Unknown resource.');
-  const cimd = await fetchCimd(client_id, fetchImpl);
-  const redirectUri = validateRedirectUri(redirect_uri, cimd);
+  const client = await resolveOAuthClient({ clientId: client_id, store, fetchImpl });
+  const redirectUri = validateRedirectUri(redirect_uri, client);
   const scopes = normalizeMcpScopes(scope);
   if (state !== undefined && (typeof state !== 'string' || state.length > 1024)) {
     throw oauthError('invalid_request', 'Invalid state parameter.');
   }
-  return { clientId: client_id, redirectUri, scopes, state, challenge: code_challenge, cimd };
+  return { clientId: client_id, redirectUri, scopes, state, challenge: code_challenge, cimd: { clientName: client.clientName, redirectUris: client.redirectUris } };
 }
 
 function oauthError(code, description, status = 400) {
@@ -168,7 +166,7 @@ export async function processAuthorizeDecision({ body, googleSub, store, fetchIm
       code_challenge_method: 'S256',
       resource: body.resource,
     },
-    fetchImpl,
+    { store, fetchImpl },
   );
   if (body.decision !== 'allow') {
     return { redirect: errorRedirect(validated.redirectUri, 'access_denied', 'The user denied the request.', validated.state, issuerIdentifier()) };
@@ -197,7 +195,7 @@ export default async function handler(req, res) {
     if (!googleSub) return loginRequired(res);
     let validated;
     try {
-      validated = await validateRequest(req.query || {});
+      validated = await validateAuthorizeRequest(req.query || {}, { store });
     } catch (e) {
       res.setHeader('Content-Type', 'text/html; charset=utf-8');
       return res.status(e?.status || 400).send(htmlPage('Authorization error', `<h1>Cannot start authorization</h1><p>${escapeHtml(e?.message || 'Invalid request.')}</p>`));
