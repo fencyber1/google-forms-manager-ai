@@ -118,9 +118,38 @@ export default async function handler(req, res) {
 
     stage = 'session-cookie';
     const session = encryptSession({ uid: userId, v: 1, createdAt: Date.now() });
+    const clearCookies = [
+      'gfm_oauth_state=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0',
+      'gfm_post_login=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0',
+    ];
+
+    // If login was started from the MCP authorize endpoint, resume that
+    // flow instead of showing the static page: the MCP client (ChatGPT)
+    // is waiting for an authorization code redirect.
+    const postParts = (cookies.gfm_post_login || '').split('.');
+    if (postParts.length === 3) {
+      const [pSig, pTs, pPayload] = postParts;
+      try {
+        const expected = Buffer.from(sign(`${pTs}.${pPayload}`));
+        const actual = Buffer.from(pSig);
+        if (expected.length === actual.length && timingSafeEqual(expected, actual) && Date.now() - Number(pTs) <= 600000) {
+          const returnTo = Buffer.from(pPayload, 'base64url').toString('utf8');
+          if (/^\/api\/oauth\/authorize(\?|$)/.test(returnTo)) {
+            res.setHeader('Set-Cookie', [
+              `gfm_session=${session}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=2592000`,
+              ...clearCookies,
+            ]);
+            return res.redirect(302, returnTo);
+          }
+        }
+      } catch {
+        // invalid resume cookie — fall through to the static page
+      }
+    }
+
     res.setHeader('Set-Cookie', [
       `gfm_session=${session}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=2592000`,
-      'gfm_oauth_state=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0',
+      ...clearCookies,
     ]);
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
     return res.status(200).send(
