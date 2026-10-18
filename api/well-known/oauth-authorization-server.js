@@ -9,7 +9,7 @@ export function authorizationServerMetadata() {
   const issuer = issuerIdentifier();
   return {
     issuer,
-    authorization_endpoint: `${issuer}/api/oauth/authorize`,
+    authorization_endpoint: `${issuer}/api/auth/google`,
     token_endpoint: `${issuer}/api/oauth/token`,
     revocation_endpoint: `${issuer}/api/oauth/revoke`,
     registration_endpoint: `${issuer}/api/oauth/register`,
